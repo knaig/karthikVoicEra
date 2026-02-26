@@ -2,26 +2,26 @@
 
 # Build all services
 build-all-services:
-	docker compose build mongodb backend minio frontend voice_server
+	docker compose build postgres ferretdb backend minio frontend voice_server
 
 # Build all services
 start-all-services:
-	docker compose up -d mongodb backend minio frontend voice_server
+	docker compose up -d postgres ferretdb backend minio frontend voice_server
 
 # Build all services
 stop-all-services:
-	docker compose down mongodb backend minio frontend voice_server
+	docker compose down postgres ferretdb backend minio frontend voice_server
 
 build-backend-services:
-	docker compose build mongodb backend minio
+	docker compose build postgres ferretdb backend minio
 
 # Start services except voice_server (detached)
 start-backend-services:
-	docker compose up -d mongodb backend minio  
+	docker compose up -d postgres ferretdb backend minio  
 
 # Stop services except voice_server
 stop-backend-services:
-	docker compose stop mongodb backend minio  
+	docker compose stop postgres ferretdb backend minio  
 
 start-voice-only-services:
 	bash -c "(cd ai4bharat_stt_server && source venv/bin/activate && python server.py) & (cd ai4bharat_tts_server && source venv/bin/activate && python server.py) & (cd voice_2_voice_server && source venv/bin/activate && python main.py) & wait"

@@ -1,29 +1,32 @@
 version: '3.8'
 
 services:
-  mongodb:
-    image: mongo:latest
-    container_name: voicera_mongodb
+  # FerretDB stack (PostgreSQL backend + FerretDB MongoDB-compatible proxy)
+  postgres:
+    image: ghcr.io/ferretdb/postgres-documentdb:16
+    container_name: voicera_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: username
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - voicera_network
+
+  ferretdb:
+    image: ghcr.io/ferretdb/ferretdb:2
+    container_name: voicera_ferretdb
     restart: unless-stopped
     ports:
       - "27017:27017"
     environment:
-      MONGO_INITDB_ROOT_USERNAME: admin
-      MONGO_INITDB_ROOT_PASSWORD: admin123
-      MONGO_INITDB_DATABASE: voicera
-    volumes:
-      - mongodb_data:/data/db
+      FERRETDB_POSTGRESQL_URL: postgres://username:password@postgres:5432/postgres
+    depends_on:
+      - postgres
     networks:
-      voicera_network:
-        aliases:
-          - mongodb
-    command: mongod --bind_ip_all
-    healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
+      - voicera_network
 
   backend:
     build:
@@ -36,10 +39,10 @@ services:
     env_file:
       - ./voicera_backend/.env
     environment:
-      - MONGODB_HOST=mongodb
+      - MONGODB_HOST=ferretdb
     depends_on:
-      mongodb:
-        condition: service_healthy
+      ferretdb:
+        condition: service_started
       minio:
         condition: service_healthy
     volumes:
@@ -126,7 +129,7 @@ services:
       - voicera_network
 
 volumes:
-  mongodb_data:
+  postgres_data:
     driver: local
   minio_data:
     driver: local

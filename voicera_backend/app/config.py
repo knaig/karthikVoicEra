@@ -45,11 +45,13 @@ class Settings:
     @property
     def mongodb_uri(self) -> str:
         """Build MongoDB connection URI."""
-        return (
+        uri = (
             f"mongodb://{self.MONGODB_USER}:{self.MONGODB_PASSWORD}"
             f"@{self.MONGODB_HOST}:{self.MONGODB_PORT}/{self.MONGODB_DATABASE}"
-            f"?authSource={self.MONGODB_AUTH_SOURCE}"
         )
+        if self.MONGODB_AUTH_SOURCE:
+            uri += f"?authSource={self.MONGODB_AUTH_SOURCE}"
+        return uri
 
 # Global settings instance
 settings = Settings()

@@ -46,6 +46,13 @@ A complete voice AI building block with telephony integration, featuring real-ti
 
 ---
 
+## Documentation
+
+- **[Technology stack & licensing](docs/TECHNOLOGY_AND_LICENSING.md)** — Technologies used in this repo (Docker, MinIO, MongoDB, FastAPI, Next.js, Pipecat, etc.), what they are used for, and their license types (open source vs proprietary).
+- **[Backend data model, storage & security](docs/BACKEND_DATA_AND_SECURITY.md)** — MongoDB collections (tables) and indexes, what is stored in MinIO vs MongoDB, which components use each, and how passwords and API access are secured (bcrypt, JWT, internal API key).
+
+---
+
 ## Quick Start
 
 ### Prerequisites

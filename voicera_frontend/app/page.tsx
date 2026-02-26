@@ -63,12 +63,12 @@ export default function LoginPage() {
           <div>
             {/* Animated logo section */}
             <motion.div
-              className="mb-8 bg-white rounded-lg p-2 inline-block"
+              className="mb-8 rounded-lg p-2 "
               initial={{ opacity: 0, y: -35 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ type: "spring", stiffness: 60, damping: 15, delay: 0.1 }}
             >
-              <img src="/ekstep.svg" alt="Ekstep" className="h-14 w-16" />
+              <img src="/ekstep.png" alt="Ekstep" className="h-20 w-20" />
             </motion.div>
             
             <div className="max-w-lg">
@@ -154,20 +154,7 @@ export default function LoginPage() {
             </div>
           </div>
           
-          <motion.div
-            initial={{ opacity: 0, y: 40 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ type: "spring", stiffness: 60, damping: 16, delay: 0.67 }}
-          >
-            <div className="flex items-center gap-4 text-white/60 text-sm mb-2">
-              <span>EkStep Foundation © 2026</span>
-              <span>·</span>
-              <Link href="#" className="hover:text-white transition-colors">Privacy</Link>
-              <span>·</span>
-              <Link href="#" className="hover:text-white transition-colors">Terms</Link>
-            </div>
-            <p className="hover:text-white transition-colors text-white/40 font-light ">Built as Digital Public Infrastructure</p>
-          </motion.div>
+         
         </div>
       </AnimatePresence>
 
