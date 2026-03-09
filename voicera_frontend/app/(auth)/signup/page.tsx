@@ -8,8 +8,6 @@ import { Input } from "@/components/ui/input"
 import { Eye, EyeOff, Mail, Lock, User, Building2, Loader2, Check } from "lucide-react"
 import { AnimatePresence, motion } from "framer-motion"
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
-
 export default function SignupPage() {
   const router = useRouter()
   const [showPassword, setShowPassword] = useState(false)
@@ -34,7 +32,7 @@ export default function SignupPage() {
     setError("")
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/v1/users/signup`, {
+      const response = await fetch("/api/signup", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -70,9 +68,10 @@ export default function SignupPage() {
               animate={{ opacity: 1, y: 0 }}
               transition={{ type: "spring", stiffness: 60, damping: 15, delay: 0.1 }}
             >
-              <img src="/ekstep.svg" alt="Ekstep" className="h-14 w-16" />
+              <img src="/ekstep.png" alt="Ekstep" className="h-14 w-16" />
             </motion.div>
             
+          
             <div className="max-w-lg">
               <motion.h1
                 className="text-5xl font-bold text-white mb-6 leading-tight"
@@ -156,20 +155,7 @@ export default function SignupPage() {
             </div>
           </div>
           
-          <motion.div
-            initial={{ opacity: 0, y: 40 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ type: "spring", stiffness: 60, damping: 16, delay: 0.67 }}
-          >
-            <div className="flex items-center gap-4 text-white/60 text-sm mb-2">
-              <span>EkStep Foundation © 2026</span>
-              <span>·</span>
-              <Link href="#" className="hover:text-white transition-colors">Privacy</Link>
-              <span>·</span>
-              <Link href="#" className="hover:text-white transition-colors">Terms</Link>
-            </div>
-            <p className="hover:text-white transition-colors text-white/40 font-light">Built as Digital Public Infrastructure</p>
-          </motion.div>
+        
         </div>
       </AnimatePresence>
 
