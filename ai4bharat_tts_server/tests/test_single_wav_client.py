@@ -23,8 +23,8 @@ except ImportError:
     sys.exit(1)
 
 url = sys.argv[1] if len(sys.argv) > 1 else "ws://localhost:8002/ws"
-text = "नमस्ते नमस्ते नमस्ते नमस्ते नमस्ते"
-description = "Female voice"
+text = "हेलो, आप कैसे हैं? आपका नाम क्या है? आप कहाँ रहते हैं?"
+description = "Radha speaks in a clear, professional voice with a calm and confident tone. The speech is articulate, balanced, and easy to understand, with a steady pace and neutral accent."
 
 # Sanitize text for filename: allow alphanumeric, spaces -> underscore, limit length
 def safe_filename(s: str, max_len: int = 80) -> str:

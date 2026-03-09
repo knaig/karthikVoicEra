@@ -116,11 +116,11 @@ class ParlerTTSStreamer(BaseStreamer):
             else:
                 self.token_cache = torch.concatenate([self.token_cache, value[:, None]], dim=-1)
 
-            #if self.token_cache.shape[-1] % self.play_steps == 0:
-            #    audio_values = self.apply_delay_pattern_mask(self.token_cache)
-            #    chunk = audio_values[self.to_yield : -self.stride]
-            #    self.audio_chunks_list.append(chunk.copy())
-            #    self.to_yield += len(audio_values) - self.to_yield - self.stride
+            if self.token_cache.shape[-1] % self.play_steps == 0:
+                audio_values = self.apply_delay_pattern_mask(self.token_cache)
+                chunk = audio_values[self.to_yield :]
+                self.audio_chunks_list.append(chunk.copy())
+                self.to_yield = len(audio_values) 
 
     def end(self):
         if not self.stramer_eos_flag:
@@ -142,7 +142,7 @@ class ParlerTTSStreamer(BaseStreamer):
         """Remove and return the most recently added audio chunk, or None if the list is empty."""
         if not self.audio_chunks_list:
             return None
-        return self.audio_chunks_list.pop()
+        return self.audio_chunks_list.pop(0)
 
     def clear_chunks(self):
         self.audio_chunks_list.clear()

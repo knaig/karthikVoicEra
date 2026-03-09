@@ -7,6 +7,7 @@ FastAPI WebSocket server for Parler TTS.
 
 import asyncio
 import base64
+import gc
 import json
 import concurrent.futures
 import contextlib
@@ -170,7 +171,17 @@ async def run_tts_loop(ws: WebSocket, request_queue: asyncio.Queue, loop, execut
         except WebSocketDisconnect:
             break
         except Exception as e:
-            await ws.send_json({"error": str(e)})
+            # Capture error message first, then aggressively release GPU state
+            error_msg = str(e)
+            # The traceback holds frame locals (attention masks, logits, model outputs, etc.)
+            # which keep GPU tensors alive — must sever that chain first
+            e.__traceback__ = None
+            del e
+            model_state = None
+            request_ids = []
+            gc.collect()
+            torch.cuda.empty_cache()
+            await ws.send_json({"error": error_msg})
             break
 
 
