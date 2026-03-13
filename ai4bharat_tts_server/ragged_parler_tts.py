@@ -7,7 +7,7 @@ import copy
 from ragged_parler_utils import *
 
 class ParlerTTSModelRunner:
-    def __init__(self, model, tokenizer, description_tokenizer, play_steps=10):
+    def __init__(self, model, tokenizer, description_tokenizer, play_steps=50):
         self.model = model
         self.tokenizer = tokenizer
         self.description_tokenizer = description_tokenizer

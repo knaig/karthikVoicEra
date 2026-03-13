@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Test the TTS WebSocket server. Saves WAV to files/{text}.wav and prints TTFT + chunk intervals.
-Usage: python test_ws_client.py [ws://localhost:8002/ws]"""
+Usage: python test_ws_client.py [ws://localhost:8000/ws]"""
 
 import base64
 import json
@@ -22,9 +22,9 @@ except ImportError:
     print("Install: pip install websocket-client")
     sys.exit(1)
 
-url = sys.argv[1] if len(sys.argv) > 1 else "ws://localhost:8002/ws"
-text = "हेलो, आप कैसे हैं? आपका नाम क्या है? आप कहाँ रहते हैं?"
-description = "Radha speaks in a clear, professional voice with a calm and confident tone. The speech is articulate, balanced, and easy to understand, with a steady pace and neutral accent."
+url = sys.argv[1] if len(sys.argv) > 1 else "ws://localhost:8000/ws"
+text = "नमस्ते नमस्ते नमस्ते नमस्ते नमस्ते"
+description = "Female voice"
 
 # Sanitize text for filename: allow alphanumeric, spaces -> underscore, limit length
 def safe_filename(s: str, max_len: int = 80) -> str:
@@ -38,7 +38,7 @@ try:
 except Exception as e:
     if "404" in str(e):
         print("404 Not Found. Start the TTS server with:")
-        print("  uvicorn websocket_server:app --host 0.0.0.0 --port 8002")
+        print("  uvicorn websocket_server:app --host 0.0.0.0 --port 8000")
         print("Then run this client again.")
     else:
         print("Connection failed:", e)

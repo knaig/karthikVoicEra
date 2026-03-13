@@ -1,4 +1,4 @@
-from parler_tts import ParlerTTSForConditionalGeneration
+from inference_server import ParlerTTSForConditionalGeneration
 from transformers.generation.streamers import BaseStreamer
 from typing import Optional, Union
 import os
@@ -6,7 +6,6 @@ import torch
 import numpy as np
 import math
 from scipy.io import wavfile
-from ragged_parler_utils import *
 
 
 class ParlerTTSStreamer(BaseStreamer):
@@ -118,9 +117,9 @@ class ParlerTTSStreamer(BaseStreamer):
 
             if self.token_cache.shape[-1] % self.play_steps == 0:
                 audio_values = self.apply_delay_pattern_mask(self.token_cache)
-                chunk = audio_values[self.to_yield :]
+                chunk = audio_values[self.to_yield : -self.stride]
                 self.audio_chunks_list.append(chunk.copy())
-                self.to_yield = len(audio_values) 
+                self.to_yield += len(audio_values) - self.to_yield - self.stride
 
     def end(self):
         if not self.stramer_eos_flag:
@@ -142,7 +141,7 @@ class ParlerTTSStreamer(BaseStreamer):
         """Remove and return the most recently added audio chunk, or None if the list is empty."""
         if not self.audio_chunks_list:
             return None
-        return self.audio_chunks_list.pop(0)
+        return self.audio_chunks_list.pop()
 
     def clear_chunks(self):
         self.audio_chunks_list.clear()

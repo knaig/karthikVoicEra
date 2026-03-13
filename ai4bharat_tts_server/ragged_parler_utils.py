@@ -1,7 +1,7 @@
 import time
 import copy
-from parler_tts import ParlerTTSForConditionalGeneration
-from parler_tts.modeling_parler_tts import ParlerTTSLogitsProcessor
+from inference_server import ParlerTTSForConditionalGeneration
+from inference_server.modeling_parler_tts import ParlerTTSLogitsProcessor, NEED_SETUP_CACHE_CLASSES_MAPPING
     
 import torch
 import torch.nn as nn

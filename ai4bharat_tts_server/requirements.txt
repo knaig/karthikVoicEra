@@ -1,14 +1,14 @@
-fastapi>=0.104.0
-uvicorn[standard]>=0.23.0
+# Pinned versions from working environment
+# Install with: pip install -r requirements.txt
+# Note: protobuf==4.25.8 required for sentencepiece compatibility (overrides descript-audiotools)
 
-torch>=2.1.1
-transformers>=4.36.0
-parler-tts>=0.1.0
-
-pydantic>=2.0.0
-soundfile>=0.12.1
-numpy>=1.24.0
-
-
-loguru>=0.7.3
-hypercorn>=0.17.0
+fastapi==0.128.8
+uvicorn[standard]==0.40.0
+websocket-client
+numpy==2.3.5
+torch==2.10.0
+torchaudio==2.10.0
+transformers==4.46.1
+descript-audio-codec==1.0.0
+sentencepiece==0.2.1
+protobuf==4.25.8

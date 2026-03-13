@@ -1,4 +1,7 @@
+notebooks/
 venv/
 __pycache__/
-*.env
-parler-tts/
+*.pyc
+files/
+rough.ipynb
+tests/
