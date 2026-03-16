@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "voicera"
+version = "0.1.0"
+description = "Make AI voice calls with tool calling support"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Karthik Naig"}]
+
+dependencies = [
+    "pipecat-ai[silero,websocket,google,cartesia,openai,deepgram,sarvam]>=0.0.98",
+    "aiohttp>=3.9.0",
+    "requests>=2.31.0",
+    "loguru>=0.7.0",
+    "pydantic>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "numpy>=1.26.0,<2.0.0",
+    "soxr>=0.3.0",
+]
+
+[project.optional-dependencies]
+indian = [
+    "python-socketio[asyncio_client]>=5.10.0",
+    "PyJWT>=2.8.0",
+    "cryptography>=41.0.0",
+]
+server = [
+    "minio>=7.2.0",
+    "pymongo>=4.6.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["voicera*"]
