@@ -1,164 +1,88 @@
-"""FastAPI server for Vobiz telephony integration with optimized TCP settings."""
+"""VoicERA Server — Thin Pipecat voice server with telephony integration.
+
+Exposes two interfaces:
+1. POST /call/outbound — Calling app requests an outbound call
+2. WebSocket /ws/{call_id} — Telephony provider connects audio stream
+
+Post-call, sends results to the calling app's webhook URL.
+"""
 
 import os
-import socket
 import json
+import socket
+import time
 import traceback
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 
+import aiohttp
+import requests
 from loguru import logger
-from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, Request, HTTPException
 from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-import requests
+from pydantic import BaseModel, Field
 
-from .bot import bot, ubona_bot
-from .backend_utils import (
-    create_meeting_in_backend,
-    update_meeting_end_time,
-    fetch_agent_config_from_backend,
-)
+from .bot import handle_call
 
 
-load_dotenv()
+# ============================================================================
+# CONFIG
+# ============================================================================
 
-# Constants
-AGENT_CONFIGS_DIR = Path("agent_configs")
+VOBIZ_API_BASE = os.getenv("VOBIZ_API_BASE", "https://api.vobiz.in/v1")
+VOBIZ_AUTH_ID = os.getenv("VOBIZ_AUTH_ID", "")
+VOBIZ_AUTH_TOKEN = os.getenv("VOBIZ_AUTH_TOKEN", "")
+VOBIZ_CALLER_ID = os.getenv("VOBIZ_CALLER_ID", "")
+SERVER_URL = os.getenv("VOICERA_SERVER_URL", "")  # Public URL of this server
+WEBSOCKET_URL = os.getenv("VOICERA_WEBSOCKET_URL", "")  # WSS URL of this server
+API_KEY = os.getenv("VOICERA_API_KEY", "")  # Simple API key auth
 
-
-# === TCP_NODELAY WebSocket Protocol ===
-
-def create_nodelay_websocket_protocol():
-    """Create a WebSocket protocol class with TCP_NODELAY enabled.
-    
-    This disables Nagle's algorithm for lower latency on small packets,
-    which is critical for real-time voice applications.
-    """
-    try:
-        from uvicorn.protocols.websockets.websockets_impl import WebSocketProtocol
-
-        class NoDelayWebSocketProtocol(WebSocketProtocol):
-            def connection_made(self, transport):
-                # Set TCP_NODELAY before calling parent
-                try:
-                    sock = transport.get_extra_info("socket")
-                    if sock is not None:
-                        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                        logger.debug("TCP_NODELAY enabled on WebSocket connection")
-                except Exception as e:
-                    logger.warning(f"Failed to set TCP_NODELAY: {e}")
-                
-                super().connection_made(transport)
-
-        return NoDelayWebSocketProtocol
-    
-    except ImportError:
-        logger.warning("Could not import WebSocketProtocol from uvicorn, TCP_NODELAY not available")
-        return None
+# In-memory call config store (call_id → config)
+# In production, use Redis for multi-process support
+_pending_calls: dict[str, dict] = {}
 
 
-# === Pydantic Models ===
+# ============================================================================
+# MODELS
+# ============================================================================
 
 class OutboundCallRequest(BaseModel):
-    """Request model for initiating outbound calls."""
-    customer_number: str
-    agent_id: str
-    custom_field: Optional[str] = None
-    caller_id: Optional[str] = None
+    """Request from the calling application to initiate a call."""
+    phone: str = Field(..., description="E.164 phone number to call")
+    systemPrompt: str = Field(..., description="System prompt with {{variable}} placeholders")
+    variables: dict[str, str] = Field(default_factory=dict, description="Variables to inject into prompt")
+    greeting: str = Field(default="", description="First message Mira speaks")
+    webhookUrl: str = Field(default="", description="URL to POST call results to when call ends")
+    maxDurationSeconds: int = Field(default=600, description="Max call duration in seconds")
+    callerId: Optional[str] = Field(default=None, description="Override caller ID")
+    # Provider config
+    llm: dict = Field(default_factory=lambda: {"provider": "openai", "model": "gpt-4o-mini"})
+    stt: dict = Field(default_factory=lambda: {"provider": "deepgram", "language": "English"})
+    tts: dict = Field(default_factory=lambda: {"provider": "cartesia", "args": {"voice_id": "95d51f79-c397-46f9-b49a-23763d3eaa2d"}})
+    # Metadata — passed through to webhook, not used by voice server
+    metadata: dict = Field(default_factory=dict)
 
 
-# === Helper Functions ===
+# ============================================================================
+# AUTH
+# ============================================================================
 
-def _get_env_or_raise(key: str) -> str:
-    """Get environment variable or raise ValueError."""
-    value = os.environ.get(key)
-    if not value:
-        raise ValueError(f"Missing required environment variable: {key}")
-    return value
-
-
-def make_outbound_call_vobiz(
-    customer_number: str,
-    agent_id: str,
-    caller_id: Optional[str] = None,
-) -> dict:
-    """Make an outbound call using Vobiz API.
-
-    Args:
-        customer_number: Phone number to call
-        agent_id: Agent ID to use
-        caller_id: Optional caller ID (defaults to VOBIZ_CALLER_ID env var)
-
-    Returns:
-        Vobiz API response dictionary
-
-    Raises:
-        ValueError: If required credentials are missing
-        requests.HTTPError: If API call fails
-    """
-    auth_id = _get_env_or_raise("VOBIZ_AUTH_ID")
-    auth_token = _get_env_or_raise("VOBIZ_AUTH_TOKEN")
-    server_url = _get_env_or_raise("JOHNAIC_SERVER_URL")
-    vobiz_api_base_url = _get_env_or_raise("VOBIZ_API_BASE")
-
-    from_number = caller_id or os.environ.get("VOBIZ_CALLER_ID")
-    if not from_number:
-        raise ValueError("No caller_id provided and VOBIZ_CALLER_ID not set")
-
-    headers = {
-        "X-Auth-ID": auth_id,
-        "X-Auth-Token": auth_token,
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "from": from_number,
-        "to": customer_number,
-        "answer_url": f"{server_url}/answer?agent_id={agent_id}",
-        "answer_method": "POST",
-    }
-
-    logger.info(f"📞 Outbound call: {from_number} → {customer_number} (agent: {agent_id})")
-    
-    vobiz_api_url = f"{vobiz_api_base_url}/Account/{auth_id}/Call/"
-    response = requests.post(vobiz_api_url, json=payload, headers=headers, timeout=30)
-    response.raise_for_status()
-
-    result = response.json()
-    logger.info(f"✅ Call initiated: {result.get('call_uuid', 'unknown')}")
-    return result
+def verify_api_key(request: Request) -> bool:
+    if not API_KEY:
+        return True  # No auth configured
+    auth = request.headers.get("Authorization", "")
+    return auth == f"Bearer {API_KEY}" or auth == API_KEY
 
 
-def _build_stream_xml(websocket_url: str) -> str:
-    """Build Vobiz XML response for WebSocket streaming."""
-    sample_rate = int(os.environ.get("SAMPLE_RATE", "8000"))
-    
-    # Use L16 for 16kHz per Vobiz spec (μ-law is 8kHz only)
-    if sample_rate == 16000:
-        content_type = "audio/x-l16;rate=16000"
-    else:
-        content_type = f"audio/x-mulaw;rate={sample_rate}"
-        
-    logger.info(f"Sending XML with contentType: {content_type}")
-    return f'''<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Stream bidirectional="true" keepCallAlive="true" contentType="{content_type}">
-        {websocket_url}
-    </Stream>
-</Response>'''
-
-
-# === FastAPI App ===
+# ============================================================================
+# APP
+# ============================================================================
 
 app = FastAPI(
-    title="Vobiz Telephony Agent API",
-    description="Voice bot API for Vobiz telephony integration",
+    title="VoicERA Server",
+    description="Thin Pipecat voice server with Vobiz telephony",
     version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
 )
 
 app.add_middleware(
@@ -170,291 +94,259 @@ app.add_middleware(
 )
 
 
-# === Routes ===
-
-@app.get("/")
-async def root():
-    """Health check endpoint."""
-    return {"service": "Vobiz Telephony Server", "status": "running"}
-
+# ============================================================================
+# ROUTES
+# ============================================================================
 
 @app.get("/health")
 async def health():
-    """Detailed health check."""
-    return {"status": "healthy"}
+    return {"status": "healthy", "service": "voicera-server"}
 
 
-@app.post("/outbound/call/")
-async def make_outbound_call(request: OutboundCallRequest):
-    """Initiate an outbound call.
+@app.post("/call/outbound")
+async def outbound_call(request: Request, body: OutboundCallRequest):
+    """Initiate an outbound phone call.
 
-    Args:
-        request: Outbound call parameters
-
-    Returns:
-        Call initiation result
+    The calling app sends the system prompt, variables, and provider config.
+    We dial via Vobiz, run the Pipecat pipeline, and POST results to webhookUrl.
     """
+    if not verify_api_key(request):
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    if not VOBIZ_AUTH_ID or not VOBIZ_AUTH_TOKEN:
+        raise HTTPException(status_code=500, detail="Vobiz credentials not configured")
+
+    if not SERVER_URL:
+        raise HTTPException(status_code=500, detail="VOICERA_SERVER_URL not configured")
+
+    # Generate call ID
+    call_id = f"vc_{int(time.time() * 1000)}"
+
+    # Store call config for when Vobiz connects the WebSocket
+    _pending_calls[call_id] = {
+        "systemPrompt": body.systemPrompt,
+        "variables": body.variables,
+        "greeting": body.greeting,
+        "webhookUrl": body.webhookUrl,
+        "maxDurationSeconds": body.maxDurationSeconds,
+        "llm": body.llm,
+        "stt": body.stt,
+        "tts": body.tts,
+        "metadata": body.metadata,
+        "phone": body.phone,
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+    }
+
+    # Dial via Vobiz
     try:
-        result = make_outbound_call_vobiz(
-            request.customer_number,
-            request.agent_id,
-            request.caller_id,
-        )
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "success",
-                "message": "Outbound call initiated",
-                "customer_number": request.customer_number,
-                "agent_id": request.agent_id,
-                "caller_id": request.caller_id,
-                "result": result,
-            },
-        )
-    except ValueError as e:
-        logger.error(f"❌ Invalid request: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"❌ Outbound call failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        caller_id = body.callerId or VOBIZ_CALLER_ID
+        if not caller_id:
+            raise ValueError("No caller ID configured")
 
-
-async def log_meeting(agent_id: str, form_data_dict: dict):
-    """Log meeting/call data to backend."""
-    try:
-        agent_config = await fetch_agent_config_from_backend(agent_id)
-        agent_type = agent_config.get("agent_type")
-        org_id = agent_config.get("org_id")
-
-        direction = form_data_dict.get("Direction", "outbound")
-        is_busy = form_data_dict.get("HangupCause", "unknown") == "USER_BUSY"
-        start_time_utc = datetime.now(timezone.utc).isoformat()
-        end_time_utc = start_time_utc if is_busy else ""
-
-        meeting_data = {
-            "meeting_id": form_data_dict.get("CallUUID", "unknown"),
-            "agent_type": agent_type,
-            "org_id": org_id,
-            "start_time_utc": start_time_utc,
-            "end_time_utc": end_time_utc,
-            "inbound": direction == "inbound",
-            "from_number": form_data_dict.get("From", "unknown"),
-            "to_number": form_data_dict.get("To", "unknown"),
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "call_busy": is_busy,
+        vobiz_url = f"{VOBIZ_API_BASE}/Account/{VOBIZ_AUTH_ID}/Call/"
+        payload = {
+            "from": caller_id,
+            "to": body.phone,
+            "answer_url": f"{SERVER_URL}/answer?call_id={call_id}",
+            "answer_method": "POST",
         }
-        logger.info(f"Meeting data: {meeting_data}")
-        await create_meeting_in_backend(meeting_data)
-        return {"status": "success"}
+
+        logger.info(f"Dialing {body.phone} (call_id={call_id})")
+        response = requests.post(
+            vobiz_url,
+            json=payload,
+            headers={
+                "X-Auth-ID": VOBIZ_AUTH_ID,
+                "X-Auth-Token": VOBIZ_AUTH_TOKEN,
+                "Content-Type": "application/json",
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        result = response.json()
+
+        return JSONResponse(content={
+            "success": True,
+            "callId": call_id,
+            "vobizCallId": result.get("call_uuid"),
+            "phone": body.phone,
+        })
+
     except Exception as e:
-        logger.error(f"Meeting log failed: {e}")
-        return {"status": "error", "message": str(e)}
+        # Clean up pending config
+        _pending_calls.pop(call_id, None)
+        logger.error(f"Outbound call failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.api_route("/answer", methods=["GET", "POST"])
 async def vobiz_answer_webhook(request: Request):
-    """Vobiz answer webhook - returns XML with WebSocket URL.
+    """Vobiz calls this when the user picks up.
 
-    This endpoint is called by Vobiz when a call is answered.
-    It returns XML instructing Vobiz to connect to our WebSocket.
+    Returns XML instructing Vobiz to connect WebSocket audio to our /ws/{call_id}.
     """
-    agent_id = request.query_params.get("agent_id")
-    form_data = await request.form()
-    form_data_dict = dict(form_data)
-    event = form_data_dict.get("Event", "unknown")
-    hangup_cause = form_data_dict.get("HangupCause", "USER_BUSY")
-
-    if event == "StartApp":
-        await log_meeting(agent_id, form_data_dict)
-        websocket_prefix = os.environ.get("JOHNAIC_WEBSOCKET_URL", "")
-        websocket_url = f"{websocket_prefix}/agent/{agent_id}"
-        return Response(
-            content=_build_stream_xml(websocket_url),
-            media_type="application/xml",
-        )
-    elif event == "Hangup" and hangup_cause == "USER_BUSY":
-        logger.info("User hung up the call")
-        await log_meeting(agent_id, form_data_dict)
-    else:
-        logger.info("Hang URL Event Sent")
-
-
-@app.websocket("/agent/{agent_id}")
-async def websocket_endpoint(websocket: WebSocket, agent_id: str):
-    """WebSocket endpoint for Vobiz audio streaming.
-
-    Args:
-        websocket: WebSocket connection
-        agent_id: Agent ID to use
-    """
-    await websocket.accept()
-    logger.info(f"🔌 WebSocket connected: agent={agent_id}")
-
-    call_sid = None
-    stream_sid = None
-
-    try:
-        # Load agent configuration
-        agent_config = await fetch_agent_config_from_backend(agent_id)
-        agent_type = agent_config.get("agent_type")
-
-        logger.info(f"📥 Agent config: {agent_config}")
-        if not agent_config:
-            logger.error(f"❌ Failed to fetch agent config from backend: {agent_id}")
-            return
-
-        # Wait for start event with call metadata
-        first_message = await websocket.receive_text()
-        data = json.loads(first_message)
-
-        if data.get("event") != "start":
-            logger.warning(f"⚠️ Expected 'start' event, got: {data.get('event')}")
-            return
-
-        start_info = data.get("start", {})
-        call_sid = start_info.get("callSid") or start_info.get("callId", "unknown")
-        stream_sid = start_info.get("streamSid") or start_info.get("streamId", "unknown")
-
-        logger.info(f"📞 Call started: call_sid={call_sid}, stream_sid={stream_sid}")
-        logger.debug(f"📋 Start info: {start_info}")
-
-        await bot(websocket, stream_sid, call_sid, agent_type, agent_config)
-
-    except FileNotFoundError as e:
-        logger.error(f"❌ {e}")
-        await websocket.close(code=1008, reason="Agent config not found")
-    except Exception as e:
-        logger.error(f"❌ WebSocket error: {e}")
-        logger.debug(traceback.format_exc())
-    finally:
-        logger.info(f"🔌 WebSocket closed: call_sid={call_sid}")
-
-# Ubona: hardcoded to Mahavistaar agent; answer URL is https://vobiz.johnaic.com/ubona
-UBONA_AGENT_TYPE = "Mahavistaar"
-UBONA_STREAM_PATH_ID = "mahavistaar"
-
-
-def _fetch_mahavistaar_config() -> Optional[dict]:
-    """Fetch Mahavistaar agent config from backend (inline, no backend_utils)."""
-    backend_url = os.environ.get("VOICERA_BACKEND_URL", "http://localhost:8000")
-    api_key = os.environ.get("INTERNAL_API_KEY")
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["X-API-Key"] = api_key
-    endpoint = f"{backend_url}/api/v1/agents/config/{UBONA_AGENT_TYPE}"
-    try:
-        response = requests.get(endpoint, headers=headers, timeout=10)
-        response.raise_for_status()
-        agent_data = response.json()
-        agent_config = agent_data.get("agent_config", {})
-        if "org_id" in agent_data:
-            agent_config["org_id"] = agent_data["org_id"]
-        if "agent_type" in agent_data:
-            agent_config["agent_type"] = agent_data["agent_type"]
-        if "greeting_message" in agent_data:
-            agent_config["greeting_message"] = agent_data["greeting_message"]
-        return agent_config
-    except Exception as e:
-        logger.error(f"Failed to fetch Mahavistaar config: {e}")
-        return None
-
-
-@app.api_route("/ubona", methods=["GET", "POST"])
-async def ubona_answer(request: Request):
-    """Ubona answer webhook - returns XML with WebSocket URL. Hardcoded to Mahavistaar."""
-    form_data = dict(await request.form())
+    call_id = request.query_params.get("call_id", "unknown")
+    form_data = dict(await request.form()) if request.method == "POST" else {}
     event = form_data.get("Event", "unknown")
+    hangup_cause = form_data.get("HangupCause", "")
 
     if event == "StartApp":
-        await log_meeting(UBONA_STREAM_PATH_ID, form_data)
-        ws_prefix = os.environ.get("JOHNAIC_WEBSOCKET_URL", "https://vobiz.johnaic.com")
+        ws_url = WEBSOCKET_URL or SERVER_URL.replace("https://", "wss://").replace("http://", "ws://")
+        websocket_url = f"{ws_url}/ws/{call_id}"
+
+        sample_rate = int(os.getenv("SAMPLE_RATE", "8000"))
+        if sample_rate == 16000:
+            content_type = "audio/x-l16;rate=16000"
+        else:
+            content_type = f"audio/x-mulaw;rate={sample_rate}"
+
         xml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Stream bidirectional="true" keepCallAlive="true" contentType="audio/x-mulaw;rate=8000">
-        {ws_prefix}/ubona/stream/{UBONA_STREAM_PATH_ID}
+    <Stream bidirectional="true" keepCallAlive="true" contentType="{content_type}">
+        {websocket_url}
     </Stream>
 </Response>'''
         return Response(content=xml, media_type="application/xml")
+
     elif event == "Hangup":
-        await log_meeting(UBONA_STREAM_PATH_ID, form_data)
+        logger.info(f"Call {call_id} hangup: {hangup_cause}")
+        # If user was busy/didn't answer, notify webhook
+        if hangup_cause in ("USER_BUSY", "NO_ANSWER", "CALL_REJECTED"):
+            config = _pending_calls.pop(call_id, None)
+            if config and config.get("webhookUrl"):
+                await _send_webhook(config["webhookUrl"], {
+                    "callId": call_id,
+                    "status": "no_answer",
+                    "endedReason": hangup_cause,
+                    "metadata": config.get("metadata", {}),
+                })
 
     return Response(status_code=200)
 
 
-@app.websocket("/ubona/stream/{agent_id}")
-async def ubona_stream(websocket: WebSocket, agent_id: str):
-    """Ubona WebSocket endpoint for audio streaming. Hardcoded to Mahavistaar."""
+@app.websocket("/ws/{call_id}")
+async def websocket_endpoint(websocket: WebSocket, call_id: str):
+    """Vobiz connects audio here after the user picks up."""
     await websocket.accept()
-    logger.info(f"🔌 Ubona WS connected: agent={agent_id}")
+    logger.info(f"WebSocket connected: call_id={call_id}")
 
-    call_id = stream_id = None
+    config = _pending_calls.pop(call_id, None)
+    if not config:
+        logger.error(f"No config found for call_id={call_id}")
+        await websocket.close(code=1008, reason="Unknown call")
+        return
+
+    stream_sid = None
 
     try:
-        agent_config = _fetch_mahavistaar_config()
-        if not agent_config:
-            logger.error(f"❌ No config for {UBONA_AGENT_TYPE}")
-            return
-        agent_type = agent_config.get("agent_type", UBONA_AGENT_TYPE)
+        # Wait for Vobiz 'start' event
+        first_message = await websocket.receive_text()
+        data = json.loads(first_message)
 
-        # Handle connected event (optional)
-        msg = json.loads(await websocket.receive_text())
-        if msg.get("event") == "connected":
-            msg = json.loads(await websocket.receive_text())
-
-        if msg.get("event") != "start":
-            logger.warning(f"⚠️ Expected 'start', got: {msg.get('event')}")
+        if data.get("event") != "start":
+            logger.warning(f"Expected 'start', got: {data.get('event')}")
             return
 
-        # Spec: callId/streamId at top level or under start (Ubona Media Stream v1.0.0)
-        start_obj = msg.get("start", {})
-        call_id = msg.get("callId") or start_obj.get("callId", "unknown")
-        stream_id = msg.get("streamId") or start_obj.get("streamId", "unknown")
+        start_info = data.get("start", {})
+        stream_sid = start_info.get("streamSid") or start_info.get("streamId", call_id)
+        vobiz_call_sid = start_info.get("callSid") or start_info.get("callId", call_id)
 
-        logger.info(f"📞 Ubona call: call_id={call_id}, stream_id={stream_id}")
+        logger.info(f"Call started: call_id={call_id}, stream={stream_sid}")
 
-        await ubona_bot(websocket, stream_id, call_id, agent_type, agent_config)
+        # Run the voice pipeline
+        result = await handle_call(
+            websocket_client=websocket,
+            stream_sid=stream_sid,
+            call_sid=call_id,
+            call_config=config,
+        )
+
+        # Send results to calling app's webhook
+        if config.get("webhookUrl"):
+            await _send_webhook(config["webhookUrl"], {
+                **result,
+                "status": "completed",
+                "endedReason": "call_ended",
+                "metadata": config.get("metadata", {}),
+            })
 
     except Exception as e:
-        logger.error(f"❌ Ubona WS error: {e}")
+        logger.error(f"Call {call_id} error: {e}")
         logger.debug(traceback.format_exc())
-    finally:
-        logger.info(f"🔌 Ubona WS closed: call_id={call_id}")
 
-def run_server(host: str = "0.0.0.0", port: int = 7860, log_level: str = "info"):
-    """Run the server with optimized settings for low-latency voice applications.
-    
-    Args:
-        host: Host to bind to
-        port: Port to bind to
-        log_level: Logging level
-    """
+        if config.get("webhookUrl"):
+            await _send_webhook(config["webhookUrl"], {
+                "callId": call_id,
+                "status": "error",
+                "endedReason": str(e),
+                "metadata": config.get("metadata", {}),
+            })
+    finally:
+        logger.info(f"WebSocket closed: call_id={call_id}")
+
+
+# ============================================================================
+# WEBHOOK
+# ============================================================================
+
+async def _send_webhook(url: str, data: dict) -> None:
+    """POST call results to the calling app's webhook."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url,
+                json=data,
+                headers={"Content-Type": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                logger.info(f"Webhook sent to {url}: status={resp.status}")
+    except Exception as e:
+        logger.error(f"Webhook failed ({url}): {e}")
+
+
+# ============================================================================
+# SERVER
+# ============================================================================
+
+def create_nodelay_websocket_protocol():
+    try:
+        from uvicorn.protocols.websockets.websockets_impl import WebSocketProtocol
+
+        class NoDelayWebSocketProtocol(WebSocketProtocol):
+            def connection_made(self, transport):
+                try:
+                    sock = transport.get_extra_info("socket")
+                    if sock is not None:
+                        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                except Exception:
+                    pass
+                super().connection_made(transport)
+
+        return NoDelayWebSocketProtocol
+    except ImportError:
+        return None
+
+
+def run_server(host: str = "0.0.0.0", port: int = 7860):
     import uvicorn
 
-    # Create config with optimized settings
     config = uvicorn.Config(
         app,
         host=host,
         port=port,
-        log_level=log_level,
-        # Use uvloop for better async performance (if available)
+        log_level="info",
         loop="auto",
-        # HTTP/1.1 settings
-        http="auto",
-        # WebSocket settings
         ws="websockets",
     )
 
-    # Set custom WebSocket protocol with TCP_NODELAY
     nodelay_protocol = create_nodelay_websocket_protocol()
     if nodelay_protocol:
         config.ws_protocol_class = nodelay_protocol
-        logger.info("✅ TCP_NODELAY enabled for WebSocket connections (Nagle's algorithm disabled)")
-    else:
-        logger.warning("⚠️ Could not enable TCP_NODELAY, latency may be affected")
+        logger.info("TCP_NODELAY enabled for WebSocket connections")
 
     server = uvicorn.Server(config)
     server.run()
 
 
 if __name__ == "__main__":
-    run_server(host="0.0.0.0", port=7860, log_level="info")
+    run_server()

@@ -1,4 +1,8 @@
-"""Service factory functions for creating LLM, STT, and TTS services."""
+"""Service factory — creates LLM, STT, and TTS services from config.
+
+Supports 6 STT providers, 5 TTS providers, and 3 LLM providers.
+Add a new provider = add one elif block.
+"""
 
 import os
 from typing import Any, Optional
@@ -6,7 +10,7 @@ from typing import Any, Optional
 from loguru import logger
 from deepgram import LiveOptions
 
-# Pipecat services
+# Pipecat built-in services
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.deepgram.stt import DeepgramSTTService
@@ -18,254 +22,199 @@ from pipecat.services.sarvam.stt import SarvamSTTService
 from pipecat.services.sarvam.tts import SarvamTTSService
 from pipecat.processors.aggregators.llm_response import LLMUserAggregatorParams
 
-# Local services
-from services.kenpath_llm.llm import KenpathLLM
+# Custom Indian language services
 from services.ai4bharat.tts import IndicParlerRESTTTSService
 from services.ai4bharat.stt import IndicConformerRESTSTTService
 from services.bhashini.stt import BhashiniSTTService
 from services.bhashini.tts import BhashiniTTSService
-from config import get_llm_model
+
 from config.stt_mappings import STT_LANGUAGE_MAP
 from config.tts_mappings import TTS_LANGUAGE_MAP
 
 
 class ServiceCreationError(Exception):
-    """Raised when a service cannot be created."""
     pass
 
 
-def create_llm_service(
-    llm_config: dict,
-    vistaar_session_id: Optional[str] = None,
-    language: Optional[str] = None,
-) -> Any:
-    """Create an LLM service based on configuration.
+# ============================================================================
+# LLM
+# ============================================================================
 
-    Args:
-        llm_config: LLM configuration dict with 'name' and optional 'args'
-        vistaar_session_id: Optional session ID for Kenpath/Vistaar
-        language: Optional agent language (e.g. "hindi", "marathi") for Kenpath
-
-    Returns:
-        Configured LLM service instance
-
-    Raises:
-        ServiceCreationError: If the LLM provider is unknown
-    """
-    provider = llm_config.get("name") or llm_config.get("provider")
+def create_llm_service(llm_config: dict) -> Any:
+    provider = (llm_config.get("provider") or llm_config.get("name") or "openai").lower()
+    model = llm_config.get("model") or llm_config.get("args", {}).get("model")
     args = llm_config.get("args", {})
-    model = args.get("model") or llm_config.get("model")
 
-    if provider == "OpenAI":
-        # Extract user aggregator params from config, with defaults
+    if provider == "openai":
         user_aggregator_params = LLMUserAggregatorParams(
             aggregation_timeout=args.get("aggregation_timeout", 0.05)
         )
-
         service = OpenAILLMService(
             api_key=os.getenv("OPENAI_API_KEY"),
-            model=get_llm_model(provider, model),
+            model=model or "gpt-4o-mini",
         )
-
-        # Store user aggregator params on the service instance for later use
         service._user_aggregator_params = user_aggregator_params
-
         return service
-    elif provider == "Kenpath":
-        return KenpathLLM(
-            vistaar_session_id=vistaar_session_id,
-            language=language,
+
+    elif provider == "gemini" or provider == "google":
+        # Use OpenAI-compatible endpoint for Gemini
+        service = OpenAILLMService(
+            api_key=os.getenv("GEMINI_API_KEY"),
+            model=model or "gemini-2.0-flash",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         )
+        return service
+
+    elif provider == "anthropic":
+        # Anthropic via OpenAI-compatible proxy or direct
+        service = OpenAILLMService(
+            api_key=os.getenv("ANTHROPIC_API_KEY"),
+            model=model or "claude-sonnet-4-20250514",
+            base_url="https://api.anthropic.com/v1/",
+        )
+        return service
+
     else:
         raise ServiceCreationError(f"Unknown LLM provider: {provider}")
 
 
+# ============================================================================
+# STT
+# ============================================================================
+
 def create_stt_service(stt_config: dict, sample_rate: int, vad_analyzer: Any = None) -> Any:
-    """Create an STT service based on configuration.
-    
-    Args:
-        stt_config: STT configuration dict with 'name', 'language', and optional 'args'
-        sample_rate: Audio sample rate in Hz
-        vad_analyzer: Optional VAD analyzer instance for direct state monitoring
-        
-    Returns:
-        Configured STT service instance
-        
-    Raises:
-        ServiceCreationError: If the STT provider is unknown
-    """
-    provider = stt_config.get("name")
-    language = stt_config.get("language")
+    provider = (stt_config.get("name") or stt_config.get("provider") or "deepgram").lower()
+    language = stt_config.get("language", "English")
     args = stt_config.get("args", {})
-    
-    # Normalize provider name to match map keys (capitalize first letter, handle special cases)
-    provider_map = {
-        "deepgram": "Deepgram",
-        "google": "Google",
-        "openai": "OpenAI",
-        "sarvam": "Sarvam",
-        "ai4bharat": "AI4Bharat",
-        "bhashini": "Bhashini",
-    }
-    provider = provider_map.get(provider.lower(), provider)
-    
-    if provider == "Deepgram":
-        model = args.get("model")
+
+    # Normalize provider name for language map lookup
+    provider_key = {
+        "deepgram": "Deepgram", "google": "Google", "openai": "OpenAI",
+        "sarvam": "Sarvam", "ai4bharat": "AI4Bharat", "bhashini": "Bhashini",
+    }.get(provider, provider)
+
+    if provider == "deepgram":
         return DeepgramSTTService(
             api_key=os.getenv("DEEPGRAM_API_KEY"),
             sample_rate=sample_rate,
             live_options=LiveOptions(
-                model=model,
-                language=STT_LANGUAGE_MAP[provider][language],
+                model=args.get("model", "nova-2"),
+                language=STT_LANGUAGE_MAP.get(provider_key, {}).get(language, "en-US"),
                 channels=1,
                 encoding="linear16",
                 sample_rate=sample_rate,
                 interim_results=True,
                 endpointing=150,
                 smart_format=True,
-                punctuate=True
+                punctuate=True,
+                keywords=args.get("keywords", []),
             )
         )
-    
-    elif provider == "Google":
+
+    elif provider == "google":
         return GoogleSTTService(
             credentials_path=os.getenv("GOOGLE_STT_CREDENTIALS_PATH", "credentials/google_stt.json"),
             sample_rate=sample_rate,
             params=GoogleSTTService.InputParams(
-                languages=[STT_LANGUAGE_MAP[provider][language]]
+                languages=[STT_LANGUAGE_MAP.get(provider_key, {}).get(language, "en-US")]
             )
         )
-    
-    elif provider == "OpenAI":
+
+    elif provider == "openai":
         return OpenAISTTService(
             api_key=os.getenv("OPENAI_API_KEY"),
-            language=STT_LANGUAGE_MAP[provider][language]
+            language=STT_LANGUAGE_MAP.get(provider_key, {}).get(language, "en"),
         )
-    
-    elif provider == "AI4Bharat":
-        model = args.get("model") or stt_config.get("model")
-        if model == "indic-conformer-stt":
-            return IndicConformerRESTSTTService(
-                language_id=STT_LANGUAGE_MAP[provider][language],
-                sample_rate=16000,
-                input_sample_rate=sample_rate,
-                vad_analyzer=vad_analyzer
-            )
-        else:
-            raise ServiceCreationError(f"Unknown ai4bharat STT model: {model}. Expected 'indic-conformer-stt'")
-    
-    elif provider == "Bhashini":
+
+    elif provider == "ai4bharat":
+        return IndicConformerRESTSTTService(
+            language_id=STT_LANGUAGE_MAP.get(provider_key, {}).get(language, "hi"),
+            sample_rate=16000,
+            input_sample_rate=sample_rate,
+            vad_analyzer=vad_analyzer,
+        )
+
+    elif provider == "bhashini":
         return BhashiniSTTService(
             api_key=os.getenv("BHASHINI_API_KEY"),
-            language=STT_LANGUAGE_MAP[provider][language],
+            language=STT_LANGUAGE_MAP.get(provider_key, {}).get(language, "hi"),
             service_id=args.get("model", "bhashini/ai4bharat/conformer-multilingual-asr"),
             sample_rate=sample_rate,
         )
-    
-    elif provider == "Sarvam":
-        model = args.get("model")
+
+    elif provider == "sarvam":
         return SarvamSTTService(
             api_key=os.getenv("SARVAM_API_KEY"),
-            language=STT_LANGUAGE_MAP[provider][language],
-            model=model,
-            sample_rate=sample_rate
+            language=STT_LANGUAGE_MAP.get(provider_key, {}).get(language, "hi-IN"),
+            model=args.get("model"),
+            sample_rate=sample_rate,
         )
 
     else:
         raise ServiceCreationError(f"Unknown STT provider: {provider}")
 
 
+# ============================================================================
+# TTS
+# ============================================================================
+
 def create_tts_service(tts_config: dict, sample_rate: int) -> Any:
-    """Create a TTS service based on configuration.
-    
-    Args:
-        tts_config: TTS configuration dict with 'name', 'language', and optional 'args'
-        sample_rate: Audio sample rate in Hz (used for some services)
-        
-    Returns:
-        Configured TTS service instance
-        
-    Raises:
-        ServiceCreationError: If the TTS provider is unknown
-    """
-    provider = tts_config.get("name")
-    language = tts_config.get("language")
+    provider = (tts_config.get("name") or tts_config.get("provider") or "cartesia").lower()
+    language = tts_config.get("language", "English")
     args = tts_config.get("args", {})
-    
-    # Normalize provider name to match map keys (capitalize first letter, handle special cases)
-    provider_map = {
-        "cartesia": "Cartesia",
-        "google": "Google",
-        "openai": "OpenAI",
-        "sarvam": "Sarvam",
-        "ai4bharat": "AI4Bharat",
-        "bhashini": "Bhashini"
-    }
-    provider = provider_map.get(provider.lower(), provider)
-    
-    if provider == "Cartesia":
-        model = args.get("model")
-        voice_id = args.get("voice_id")
+
+    provider_key = {
+        "cartesia": "Cartesia", "google": "Google", "openai": "OpenAI",
+        "sarvam": "Sarvam", "ai4bharat": "AI4Bharat", "bhashini": "Bhashini",
+    }.get(provider, provider)
+
+    if provider == "cartesia":
         return CartesiaTTSService(
             api_key=os.getenv("CARTESIA_API_KEY"),
-            model=model,
+            model=args.get("model"),
             encoding="pcm_s16le",
-            voice_id=voice_id
+            voice_id=args.get("voice_id"),
         )
-    
-    elif provider == "Google":
-        lang_code = TTS_LANGUAGE_MAP[provider][language]
-        voice_id = args.get("voice_id") or tts_config.get("voice_id")
+
+    elif provider == "google":
         return GoogleTTSService(
             credentials_path=os.getenv("GOOGLE_TTS_CREDENTIALS_PATH", "credentials/google_tts.json"),
-            voice_id=voice_id,
-            params=GoogleTTSService.InputParams(language=lang_code)
+            voice_id=args.get("voice_id"),
+            params=GoogleTTSService.InputParams(
+                language=TTS_LANGUAGE_MAP.get(provider_key, {}).get(language, "en-US")
+            )
         )
-    
-    elif provider == "OpenAI":
-        voice = args.get("voice") or tts_config.get("voice_id")
+
+    elif provider == "openai":
         return OpenAITTSService(
             api_key=os.getenv("OPENAI_API_KEY"),
-            voice=voice
+            voice=args.get("voice", "alloy"),
         )
-    
-    elif provider == "AI4Bharat":
-        model = args.get("model") or tts_config.get("model")
-        if model == "indic-parler-tts":
-            speaker = tts_config.get("speaker") or args.get("speaker")
-            description = tts_config.get("description") or args.get("description")
-            return IndicParlerRESTTTSService(
-                speaker=speaker,
-                description=description,
-                sample_rate=sample_rate
-            )
-        else:
-            raise ServiceCreationError(f"Unknown ai4bharat TTS model: {model}. Expected 'indic-parler-tts'")
-    
-    elif provider == "Bhashini":
-        speaker = tts_config.get("speaker") or args.get("speaker")
-        description = tts_config.get("description") or args.get("description")
+
+    elif provider == "ai4bharat":
+        return IndicParlerRESTTTSService(
+            speaker=args.get("speaker", "Divya"),
+            description=args.get("description", "A clear, natural voice with good audio quality."),
+            sample_rate=sample_rate,
+        )
+
+    elif provider == "bhashini":
         return BhashiniTTSService(
-            speaker=speaker,
-            description=description,
-            sample_rate=44100
+            speaker=args.get("speaker", "Divya"),
+            description=args.get("description", "A clear, natural voice with good audio quality."),
+            sample_rate=44100,
         )
-    
-    elif provider == "Sarvam":
-        model = args.get("model")
-        speaker = args.get("speaker") or tts_config.get("speaker")
-        pitch = args.get("pitch")
-        pace = args.get("pace")
-        loudness = args.get("loudness")
+
+    elif provider == "sarvam":
         return SarvamTTSService(
             api_key=os.getenv("SARVAM_API_KEY"),
-            target_language_code=TTS_LANGUAGE_MAP[provider][language],
-            model=model,
-            speaker=speaker,
-            pitch=pitch,
-            pace=pace,
-            loudness=loudness
+            target_language_code=TTS_LANGUAGE_MAP.get(provider_key, {}).get(language, "hi-IN"),
+            model=args.get("model"),
+            speaker=args.get("speaker"),
+            pitch=args.get("pitch"),
+            pace=args.get("pace"),
+            loudness=args.get("loudness"),
         )
-    
+
     else:
         raise ServiceCreationError(f"Unknown TTS provider: {provider}")
