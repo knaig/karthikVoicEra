@@ -42,9 +42,14 @@ class Settings:
     VOBIZ_AUTH_ID: str = os.getenv("VOBIZ_AUTH_ID", "")
     VOBIZ_AUTH_TOKEN: str = os.getenv("VOBIZ_AUTH_TOKEN", "")
     
+    # Direct MongoDB URI (for Atlas / cloud-hosted MongoDB)
+    MONGODB_URI: str = os.getenv("MONGODB_URI", "")
+
     @property
     def mongodb_uri(self) -> str:
-        """Build MongoDB connection URI."""
+        """Return MongoDB URI — prefers MONGODB_URI env var (Atlas), falls back to component-based URI."""
+        if self.MONGODB_URI:
+            return self.MONGODB_URI
         return (
             f"mongodb://{self.MONGODB_USER}:{self.MONGODB_PASSWORD}"
             f"@{self.MONGODB_HOST}:{self.MONGODB_PORT}/{self.MONGODB_DATABASE}"

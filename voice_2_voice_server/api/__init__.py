@@ -1,12 +1,6 @@
-"""API module for voice bot server.
+"""API module for voice bot server."""
 
-This module provides:
-- FastAPI application for handling telephony webhooks
-- Voice bot pipeline implementation
-- Service factories for LLM, STT, and TTS providers
-"""
-
-from .bot import bot, run_bot
+from .bot import handle_call, run_pipeline
 from .server import app
 from .services import (
     create_llm_service,
@@ -16,12 +10,9 @@ from .services import (
 )
 
 __all__ = [
-    # Bot
-    "bot",
-    "run_bot",
-    # Server
+    "handle_call",
+    "run_pipeline",
     "app",
-    # Services
     "create_llm_service",
     "create_stt_service",
     "create_tts_service",

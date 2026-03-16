@@ -1,0 +1,75 @@
+# Render Blueprint — deploys backend, voice server, and frontend
+# MongoDB Atlas must be provisioned separately and MONGODB_URI set in env.
+
+services:
+  # ── Backend API (FastAPI) ──────────────────────────────────────────
+  - type: web
+    name: voicera-backend
+    runtime: docker
+    dockerfilePath: ./voicera_backend/Dockerfile
+    dockerContext: ./voicera_backend
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: MONGODB_URI
+        sync: false  # Set manually — MongoDB Atlas connection string
+      - key: SECRET_KEY
+        generateValue: true
+      - key: INTERNAL_API_KEY
+        generateValue: true
+      - key: VOBIZ_AUTH_ID
+        sync: false
+      - key: VOBIZ_AUTH_TOKEN
+        sync: false
+      - key: VOBIZ_API_BASE_URL
+        value: https://api.vobiz.ai/api/v1
+
+  # ── Voice Server (Pipecat) ────────────────────────────────────────
+  - type: web
+    name: voicera-voice
+    runtime: docker
+    dockerfilePath: ./voice_2_voice_server/Dockerfile
+    dockerContext: ./voice_2_voice_server
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: VOICERA_SERVER_URL
+        sync: false  # Set to this service's public URL (https://voicera-voice.onrender.com)
+      - key: VOICERA_WEBSOCKET_URL
+        sync: false  # Set to wss://voicera-voice.onrender.com
+      - key: VOICERA_API_KEY
+        generateValue: true
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: DEEPGRAM_API_KEY
+        sync: false
+      - key: CARTESIA_API_KEY
+        sync: false
+      - key: VOBIZ_API_BASE
+        value: https://api.vobiz.ai/api/v1
+      - key: VOBIZ_AUTH_ID
+        sync: false
+      - key: VOBIZ_AUTH_TOKEN
+        sync: false
+      - key: VOBIZ_CALLER_ID
+        sync: false
+      - key: SAMPLE_RATE
+        value: "8000"
+
+  # ── Frontend (Next.js) ────────────────────────────────────────────
+  - type: web
+    name: voicera-frontend
+    runtime: node
+    buildCommand: cd voicera_frontend && npm install && npm run build
+    startCommand: cd voicera_frontend && npm start
+    plan: starter
+    healthCheckPath: /
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        sync: false  # Set to https://voicera-backend.onrender.com
+      - key: NEXT_PUBLIC_JOHNAIC_SERVER_URL
+        sync: false  # Set to https://voicera-voice.onrender.com
+      - key: NODE_ENV
+        value: production
