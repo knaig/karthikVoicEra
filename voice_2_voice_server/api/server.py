@@ -172,8 +172,17 @@ async def outbound_call(request: Request, body: OutboundCallRequest):
             "phone": body.phone,
         })
 
+    except requests.exceptions.HTTPError as e:
+        _pending_calls.pop(call_id, None)
+        error_body = ""
+        try:
+            error_body = e.response.text
+        except Exception:
+            pass
+        logger.error(f"Outbound call failed: {e} | Vobiz response: {error_body}")
+        raise HTTPException(status_code=500, detail=f"{e} | {error_body}")
+
     except Exception as e:
-        # Clean up pending config
         _pending_calls.pop(call_id, None)
         logger.error(f"Outbound call failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
