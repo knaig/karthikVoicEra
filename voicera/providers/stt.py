@@ -4,12 +4,6 @@ import os
 from typing import Any, Optional
 
 from loguru import logger
-from deepgram import LiveOptions
-
-from pipecat.services.deepgram.stt import DeepgramSTTService
-from pipecat.services.google.stt import GoogleSTTService
-from pipecat.services.openai.stt import OpenAISTTService
-from pipecat.services.sarvam.stt import SarvamSTTService
 
 from voicera.indian.language_maps import STT_LANGUAGE_MAP
 
@@ -32,6 +26,11 @@ def create_stt_service(config: dict, sample_rate: int, vad_analyzer: Any = None)
     pk = _PROVIDER_KEY.get(provider, provider)
 
     if provider == "deepgram":
+        from pipecat.services.deepgram.stt import DeepgramSTTService
+        try:
+            from deepgram import LiveOptions
+        except ImportError:
+            from deepgram import DeepgramClientOptions as LiveOptions
         return DeepgramSTTService(
             api_key=api_key or os.getenv("DEEPGRAM_API_KEY"),
             sample_rate=sample_rate,
@@ -45,6 +44,7 @@ def create_stt_service(config: dict, sample_rate: int, vad_analyzer: Any = None)
         )
 
     elif provider == "google":
+        from pipecat.services.google.stt import GoogleSTTService
         return GoogleSTTService(
             credentials_path=args.get("credentials_path") or os.getenv("GOOGLE_STT_CREDENTIALS_PATH", "credentials/google_stt.json"),
             sample_rate=sample_rate,
@@ -54,6 +54,7 @@ def create_stt_service(config: dict, sample_rate: int, vad_analyzer: Any = None)
         )
 
     elif provider == "openai":
+        from pipecat.services.openai.stt import OpenAISTTService
         return OpenAISTTService(
             api_key=api_key or os.getenv("OPENAI_API_KEY"),
             language=STT_LANGUAGE_MAP.get(pk, {}).get(language, "en"),
@@ -77,6 +78,7 @@ def create_stt_service(config: dict, sample_rate: int, vad_analyzer: Any = None)
         )
 
     elif provider == "sarvam":
+        from pipecat.services.sarvam.stt import SarvamSTTService
         return SarvamSTTService(
             api_key=api_key or os.getenv("SARVAM_API_KEY"),
             language=STT_LANGUAGE_MAP.get(pk, {}).get(language, "hi-IN"),
