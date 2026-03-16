@@ -34,7 +34,9 @@ def create_tts_service(config: dict, sample_rate: int) -> Any:
     if provider == "cartesia":
         return CartesiaTTSService(
             api_key=api_key or os.getenv("CARTESIA_API_KEY"),
-            model=args.get("model"), encoding="pcm_s16le", voice_id=voice_id,
+            model=args.get("model") or "sonic",
+            encoding="pcm_s16le",
+            voice_id=voice_id or "95d51f79-c397-46f9-b49a-23763d3eaa2d",
         )
 
     elif provider == "google":
