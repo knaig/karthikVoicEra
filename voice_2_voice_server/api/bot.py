@@ -171,11 +171,8 @@ async def run_pipeline(
         else:
             context_aggregator = llm.create_context_aggregator(context)
 
-        greeting_filter = GreetingInterruptionFilter()
-
         pipeline = Pipeline([
             transport.input(),
-            greeting_filter,
             stt,
             transcript.user(),
             context_aggregator.user(),
@@ -197,7 +194,6 @@ async def run_pipeline(
             logger.info("Client connected")
             await audiobuffer.start_recording()
             if greeting and greeting.strip():
-                greeting_filter.start_greeting()
                 await task.queue_frames([TTSSpeakFrame(greeting)])
 
         @transport.event_handler("on_client_disconnected")
