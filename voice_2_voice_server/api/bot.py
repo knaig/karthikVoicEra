@@ -13,13 +13,21 @@ from typing import Any, Optional
 
 from loguru import logger
 
-from pipecat.frames.frames import TTSSpeakFrame, TTSStartedFrame
+from collections import deque
+
+from pipecat.frames.frames import (
+    TTSSpeakFrame, TTSStartedFrame, Frame,
+    UserStartedSpeakingFrame, UserStoppedSpeakingFrame,
+    TranscriptionFrame, InterimTranscriptionFrame,
+    InputAudioRawFrame,
+)
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
 from pipecat.processors.transcript_processor import TranscriptProcessor
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.utils.text.base_text_aggregator import BaseTextAggregator, Aggregation, AggregationType
@@ -29,8 +37,35 @@ from pipecat.transports.websocket.fastapi import (
 )
 
 from serializer.vobiz_serializer import VobizFrameSerializer
-from services.audio.greeting_interruption_filter import GreetingInterruptionFilter
 from .services import create_llm_service, create_stt_service, create_tts_service
+
+
+# ============================================================================
+# DEBUG — in-memory log ring buffer, accessible via /debug endpoint
+# ============================================================================
+debug_logs: deque = deque(maxlen=200)
+
+
+class DebugFrameLogger(FrameProcessor):
+    """Logs non-audio frame types passing through the pipeline."""
+
+    def __init__(self, name: str, **kwargs):
+        super().__init__(**kwargs)
+        self._name = name
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        # Skip noisy audio frames
+        if not isinstance(frame, (InputAudioRawFrame,)):
+            frame_name = frame.__class__.__name__
+            msg = f"[{self._name}] {direction.name} {frame_name}"
+            if isinstance(frame, TranscriptionFrame):
+                msg += f": '{frame.text}'"
+            elif isinstance(frame, InterimTranscriptionFrame):
+                msg += f": '{frame.text}'"
+            logger.info(msg)
+            debug_logs.append(f"{time.time():.1f} {msg}")
+        await self.push_frame(frame, direction)
 
 
 # ============================================================================
@@ -171,12 +206,21 @@ async def run_pipeline(
         else:
             context_aggregator = llm.create_context_aggregator(context)
 
+        debug_after_transport = DebugFrameLogger("after_transport")
+        debug_after_stt = DebugFrameLogger("after_stt")
+        debug_after_aggregator = DebugFrameLogger("after_aggregator")
+        debug_after_llm = DebugFrameLogger("after_llm")
+
         pipeline = Pipeline([
             transport.input(),
+            debug_after_transport,
             stt,
+            debug_after_stt,
             transcript.user(),
             context_aggregator.user(),
+            debug_after_aggregator,
             llm,
+            debug_after_llm,
             tts,
             transcript.assistant(),
             audiobuffer,

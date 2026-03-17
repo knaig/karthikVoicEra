@@ -101,6 +101,13 @@ async def health():
     return {"status": "healthy", "service": "voicera-server"}
 
 
+@app.get("/debug")
+async def debug_logs_endpoint():
+    """Return recent pipeline debug logs."""
+    from .bot import debug_logs
+    return {"logs": list(debug_logs)}
+
+
 @app.post("/call/outbound")
 async def outbound_call(request: Request, body: OutboundCallRequest):
     """Initiate an outbound phone call.
