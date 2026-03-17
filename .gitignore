@@ -19,3 +19,4 @@ venv/
 
 # OS
 .DS_Storevoice_2_voice_server/.env
+render-env.txt

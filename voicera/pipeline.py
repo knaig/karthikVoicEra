@@ -36,6 +36,7 @@ from voicera.audio.greeting_filter import GreetingInterruptionFilter
 from voicera.audio.optimizations import (
     patch_soxr_resampler, FastPunctuationAggregator, patch_immediate_first_chunk,
 )
+from voicera.audio.noise_filter import NoiseGateFilter, EchoCancellationFilter
 from voicera.telephony.vobiz import VobizFrameSerializer
 
 # Apply SOXR patch once on import
@@ -228,6 +229,8 @@ async def run_voice_pipeline(
     # ================================================================
     greeting_filter = GreetingInterruptionFilter()
     voicemail_detector = VoicemailDetector()
+    noise_filter = NoiseGateFilter(gate_threshold=0.02, sample_rate=16000)
+    echo_filter = EchoCancellationFilter(suppression_factor=0.1)
     audiobuffer = AudioBufferProcessor()
     transcript = TranscriptProcessor()
 
@@ -254,6 +257,8 @@ async def run_voice_pipeline(
     # ================================================================
     pipeline = Pipeline([
         transport.input(),
+        noise_filter,            # Remove phone line hiss/noise before VAD sees it
+        echo_filter,             # Suppress echo when bot is speaking
         greeting_filter,         # Block interruptions during greeting
         stt,                     # Deepgram STT (with utterance_end_ms)
         voicemail_detector,      # Detect voicemail in first 8 seconds
@@ -273,6 +278,7 @@ async def run_voice_pipeline(
     async def on_client_connected(transport, client):
         logger.info("Client connected")
         await audiobuffer.start_recording()
+        echo_filter.set_bot_speaking(True)  # Suppress echo during greeting
         if greeting and greeting.strip():
             greeting_filter.start_greeting()
             await task.queue_frames([TTSSpeakFrame(greeting)])
