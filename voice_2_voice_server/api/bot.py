@@ -313,15 +313,14 @@ async def handle_call(
     )
 
     vad_analyzer = SileroVADAnalyzer(
-        sample_rate=sample_rate,
+        sample_rate=16000,  # Silero expects 16kHz — transport resamples internally
         params=VADParams(
-            stop_secs=0.35,
-            min_volume=0.3,
-            confidence=0.4,
-            start_secs=0.1,
+            confidence=0.6,     # Match voicera/pipeline.py (was 0.4 — too sensitive)
+            start_secs=0.3,     # 300ms min speech to trigger start (was 0.1)
+            stop_secs=0.4,      # 400ms silence to trigger stop
+            min_volume=0.5,     # Filter line noise (was 0.3)
         ),
     )
-    vad_analyzer._smoothing_factor = 0.1
 
     import pipecat.transports.base_input
     pipecat.transports.base_input.AUDIO_INPUT_TIMEOUT_SECS = 0.1
