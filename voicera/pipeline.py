@@ -37,6 +37,7 @@ from voicera.audio.optimizations import (
     patch_soxr_resampler, FastPunctuationAggregator, patch_immediate_first_chunk,
 )
 from voicera.audio.noise_filter import NoiseGateFilter, EchoCancellationFilter
+from voicera.audio.call_quality import CallQualityAdapter
 from voicera.telephony.vobiz import VobizFrameSerializer
 
 # Apply SOXR patch once on import
@@ -231,6 +232,12 @@ async def run_voice_pipeline(
     voicemail_detector = VoicemailDetector()
     noise_filter = NoiseGateFilter(gate_threshold=0.02, sample_rate=16000)
     echo_filter = EchoCancellationFilter(suppression_factor=0.1)
+    quality_adapter = CallQualityAdapter(
+        vad_analyzer=vad_analyzer,
+        noise_filter=noise_filter,
+        echo_filter=echo_filter,
+        sample_rate=16000,
+    )
     audiobuffer = AudioBufferProcessor()
     transcript = TranscriptProcessor()
 
@@ -257,6 +264,7 @@ async def run_voice_pipeline(
     # ================================================================
     pipeline = Pipeline([
         transport.input(),
+        quality_adapter,         # Measure SNR, auto-adjust VAD/noise/echo params
         noise_filter,            # Remove phone line hiss/noise before VAD sees it
         echo_filter,             # Suppress echo when bot is speaking
         greeting_filter,         # Block interruptions during greeting
