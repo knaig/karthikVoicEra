@@ -35,11 +35,15 @@ def create_stt_service(config: dict, sample_rate: int, vad_analyzer: Any = None)
             api_key=api_key or os.getenv("DEEPGRAM_API_KEY"),
             sample_rate=sample_rate,
             live_options=LiveOptions(
-                model=args.get("model", "nova-2"),
+                model=args.get("model", "nova-3"),
                 language=STT_LANGUAGE_MAP.get(pk, {}).get(language, "en-US"),
                 channels=1, encoding="linear16", sample_rate=sample_rate,
-                interim_results=True, endpointing=150, smart_format=True,
-                punctuate=True, keywords=args.get("keywords", []),
+                interim_results=True,
+                endpointing=500,          # 500ms silence endpointing
+                utterance_end_ms=1500,    # 1.5s gap between words = end of utterance (noise-resistant)
+                smart_format=True,
+                punctuate=True,
+                keywords=args.get("keywords", []),
             ),
         )
 

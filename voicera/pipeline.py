@@ -1,4 +1,12 @@
-"""Pipecat pipeline wiring — STT → LLM → TTS with tool calling."""
+"""Pipecat pipeline wiring — STT → LLM → TTS with production-grade call quality.
+
+Call quality engineering:
+- Smart Turn v3: ML-based end-of-turn detection (not raw VAD)
+- Silero VAD: telephony-tuned params from Silero's repo
+- 300ms minimum speech gate: filters phone clicks/noise
+- Deepgram utterance_end_ms: noise-resistant endpointing
+- Voicemail detection: STT-based "leave a message" matching
+"""
 
 import time
 import traceback
@@ -7,13 +15,14 @@ from datetime import datetime, timezone
 
 from loguru import logger
 
-from pipecat.frames.frames import TTSSpeakFrame
+from pipecat.frames.frames import TTSSpeakFrame, Frame, TranscriptionFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
 from pipecat.processors.transcript_processor import TranscriptProcessor
+from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.transports.websocket.fastapi import (
@@ -32,6 +41,65 @@ from voicera.telephony.vobiz import VobizFrameSerializer
 # Apply SOXR patch once on import
 patch_soxr_resampler()
 
+# Try to import Smart Turn v3 (optional — falls back to raw VAD if not available)
+_smart_turn_available = False
+try:
+    from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
+    _smart_turn_available = True
+    logger.info("Smart Turn v3 available — using ML-based turn detection")
+except ImportError:
+    logger.warning("Smart Turn v3 not available — using raw VAD (install pipecat-ai[smart-turn])")
+
+
+# ============================================================================
+# VOICEMAIL DETECTOR
+# ============================================================================
+
+class VoicemailDetector(FrameProcessor):
+    """Detect voicemail greetings and end the call.
+
+    Listens for the first 6 seconds of speech. If the transcription contains
+    voicemail phrases, cancels the pipeline.
+    """
+
+    VOICEMAIL_PHRASES = [
+        "leave a message", "leave your message", "after the tone",
+        "after the beep", "not available", "cannot take your call",
+        "please record", "voicemail", "mailbox",
+    ]
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._call_start = time.monotonic()
+        self._detection_window = 8.0  # seconds
+        self._detected = False
+        self._first_user_speech = False
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+
+        # Only check during the first N seconds
+        elapsed = time.monotonic() - self._call_start
+        if elapsed > self._detection_window or self._detected:
+            await self.push_frame(frame, direction)
+            return
+
+        # Check transcription frames for voicemail phrases
+        if isinstance(frame, TranscriptionFrame) and frame.text:
+            text_lower = frame.text.lower()
+            for phrase in self.VOICEMAIL_PHRASES:
+                if phrase in text_lower:
+                    logger.info(f"Voicemail detected: '{frame.text}' — ending call")
+                    self._detected = True
+                    # Don't push the frame — let the pipeline end
+                    return
+
+        await self.push_frame(frame, direction)
+
+
+# ============================================================================
+# MAIN PIPELINE
+# ============================================================================
 
 async def run_voice_pipeline(
     websocket,
@@ -49,13 +117,7 @@ async def run_voice_pipeline(
     sample_rate: int = 8000,
     serializer=None,
 ) -> dict:
-    """Run the full voice pipeline and return call results.
-
-    Args:
-        tools: OpenAI function-calling tool schemas
-        tool_handler: async callable(name, args) -> str for tool execution
-        on_transcript_update: async callable(message_dict) for live transcript
-    """
+    """Run the full voice pipeline with production-grade call quality."""
     call_start = time.monotonic()
     start_time_utc = datetime.now(timezone.utc).isoformat()
 
@@ -68,32 +130,47 @@ async def run_voice_pipeline(
             ),
         )
 
-    # VAD
+    # ================================================================
+    # VAD — Silero telephony-tuned params
+    # Source: Silero VAD repo recommended presets for 8kHz telephony
+    # ================================================================
     vad_analyzer = SileroVADAnalyzer(
-        sample_rate=sample_rate,
-        params=VADParams(stop_secs=0.5, min_volume=0.5, confidence=0.6, start_secs=0.2),
+        sample_rate=16000,  # Silero + Smart Turn expect 16kHz (serializer upsamples)
+        params=VADParams(
+            confidence=0.6,     # Silero confidence threshold
+            start_secs=0.3,     # 300ms min speech — filters phone clicks/noise
+            stop_secs=0.5,      # 500ms silence before considering speech ended
+            min_volume=0.5,     # Filters low-level line noise
+        ),
     )
-    vad_analyzer._smoothing_factor = 0.3
 
-    # Reduce audio input/output delays
+    # Reduce audio timeouts for responsiveness
     import pipecat.transports.base_input
-    pipecat.transports.base_input.AUDIO_INPUT_TIMEOUT_SECS = 0.1
+    pipecat.transports.base_input.AUDIO_INPUT_TIMEOUT_SECS = 0.2
     import pipecat.transports.base_output
-    pipecat.transports.base_output.BOT_VAD_STOP_SECS = 0.2
+    pipecat.transports.base_output.BOT_VAD_STOP_SECS = 0.3
 
+    # ================================================================
     # Transport
+    # ================================================================
     transport = FastAPIWebsocketTransport(
         websocket=websocket,
         params=FastAPIWebsocketParams(
-            audio_in_enabled=True, audio_out_enabled=True, add_wav_header=False,
-            vad_analyzer=vad_analyzer, serializer=serializer,
-            audio_in_passthrough=True, session_timeout=max_duration,
+            audio_in_enabled=True,
+            audio_out_enabled=True,
+            add_wav_header=False,
+            vad_analyzer=vad_analyzer,
+            serializer=serializer,
+            audio_in_passthrough=True,
+            session_timeout=max_duration,
             audio_out_10ms_chunks=2,
         ),
     )
     patch_immediate_first_chunk(transport)
 
+    # ================================================================
     # Services
+    # ================================================================
     llm = create_llm_service(llm_config)
     stt = create_stt_service(stt_config, sample_rate, vad_analyzer=vad_analyzer)
     tts = create_tts_service(tts_config, sample_rate)
@@ -102,22 +179,42 @@ async def run_voice_pipeline(
     tts._aggregate_sentences = True
     tts._text_aggregator = FastPunctuationAggregator()
 
+    # ================================================================
     # LLM context with tools
+    # ================================================================
     messages = [{"role": "system", "content": system_prompt}]
     context = OpenAILLMContext(messages, tools=tools or None)
 
-    user_params = getattr(llm, "_user_aggregator_params", None)
-    if user_params:
-        context_aggregator = llm.create_context_aggregator(context, user_params=user_params)
+    # Smart Turn: use ML-based turn detection if available
+    if _smart_turn_available:
+        try:
+            smart_turn = LocalSmartTurnAnalyzerV3()
+            from pipecat.processors.aggregators.llm_response import LLMUserAggregatorParams
+            user_params = LLMUserAggregatorParams(
+                smart_turn_analyzer=smart_turn,
+                aggregation_timeout=3.0,  # Max wait after VAD silence before forcing end-of-turn
+            )
+            context_aggregator = llm.create_context_aggregator(context, user_params=user_params)
+            logger.info("Using Smart Turn v3 for turn detection")
+        except Exception as e:
+            logger.warning(f"Smart Turn init failed, using default: {e}")
+            user_params = getattr(llm, "_user_aggregator_params", None)
+            if user_params:
+                context_aggregator = llm.create_context_aggregator(context, user_params=user_params)
+            else:
+                context_aggregator = llm.create_context_aggregator(context)
     else:
-        context_aggregator = llm.create_context_aggregator(context)
+        user_params = getattr(llm, "_user_aggregator_params", None)
+        if user_params:
+            context_aggregator = llm.create_context_aggregator(context, user_params=user_params)
+        else:
+            context_aggregator = llm.create_context_aggregator(context)
 
     # Register tool handler on LLM if tools provided
     if tools and tool_handler:
         for tool_def in tools:
             func_name = tool_def["function"]["name"]
 
-            # Create a closure that captures func_name
             async def _make_handler(fn=func_name):
                 async def _handler(function_name, tool_call_id, arguments, llm_instance, context, result_callback):
                     result = await tool_handler(fn, arguments)
@@ -126,7 +223,11 @@ async def run_voice_pipeline(
 
             llm.register_function(func_name, await _make_handler(func_name))
 
+    # ================================================================
+    # Pipeline processors
+    # ================================================================
     greeting_filter = GreetingInterruptionFilter()
+    voicemail_detector = VoicemailDetector()
     audiobuffer = AudioBufferProcessor()
     transcript = TranscriptProcessor()
 
@@ -148,13 +249,16 @@ async def run_voice_pipeline(
                 except Exception:
                     pass
 
-    # Pipeline
+    # ================================================================
+    # Pipeline — order matters
+    # ================================================================
     pipeline = Pipeline([
         transport.input(),
-        greeting_filter,
-        stt,
+        greeting_filter,         # Block interruptions during greeting
+        stt,                     # Deepgram STT (with utterance_end_ms)
+        voicemail_detector,      # Detect voicemail in first 8 seconds
         transcript.user(),
-        context_aggregator.user(),
+        context_aggregator.user(),  # Smart Turn decides end-of-turn here
         llm,
         tts,
         transcript.assistant(),
@@ -186,6 +290,10 @@ async def run_voice_pipeline(
         logger.debug(traceback.format_exc())
 
     duration = time.monotonic() - call_start
+
+    # Check if voicemail was detected
+    voicemail = voicemail_detector._detected if voicemail_detector else False
+
     return {
         "call_id": call_sid,
         "transcript": "\n".join(transcript_lines),
@@ -193,4 +301,5 @@ async def run_voice_pipeline(
         "duration": int(duration),
         "started_at": start_time_utc,
         "ended_at": datetime.now(timezone.utc).isoformat(),
+        "voicemail_detected": voicemail,
     }

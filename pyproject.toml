@@ -12,7 +12,7 @@ license = {text = "MIT"}
 authors = [{name = "Karthik Naig"}]
 
 dependencies = [
-    "pipecat-ai[silero,websocket,google,cartesia,openai,deepgram,sarvam]>=0.0.98",
+    "pipecat-ai[silero,websocket,google,cartesia,openai,deepgram,sarvam,smart-turn]>=0.0.98",
     "aiohttp>=3.9.0",
     "requests>=2.31.0",
     "loguru>=0.7.0",
