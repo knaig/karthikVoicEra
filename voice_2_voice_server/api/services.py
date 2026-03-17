@@ -104,7 +104,8 @@ def create_stt_service(stt_config: dict, sample_rate: int, vad_analyzer: Any = N
                 encoding="linear16",
                 sample_rate=sample_rate,
                 interim_results=True,
-                endpointing=150,
+                endpointing=300,              # 300ms silence = end of utterance (was 150 — too aggressive for long sentences)
+                utterance_end_ms=1200,        # 1.2s gap between words = definite end (noise-resistant)
                 smart_format=True,
                 punctuate=True,
                 keywords=args.get("keywords", []),
