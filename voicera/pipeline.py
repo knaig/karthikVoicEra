@@ -71,9 +71,9 @@ async def run_voice_pipeline(
     # VAD
     vad_analyzer = SileroVADAnalyzer(
         sample_rate=sample_rate,
-        params=VADParams(stop_secs=0.35, min_volume=0.3, confidence=0.4, start_secs=0.1),
+        params=VADParams(stop_secs=0.5, min_volume=0.5, confidence=0.6, start_secs=0.2),
     )
-    vad_analyzer._smoothing_factor = 0.1
+    vad_analyzer._smoothing_factor = 0.3
 
     # Reduce audio input/output delays
     import pipecat.transports.base_input
