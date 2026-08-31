@@ -50,7 +50,7 @@ def create_llm_service(llm_config: dict) -> Any:
             aggregation_timeout=args.get("aggregation_timeout", 0.05)
         )
         service = OpenAILLMService(
-            api_key=os.getenv("OPENAI_API_KEY"),
+            api_key=llm_config.get("apiKey") or os.getenv("OPENAI_API_KEY"),
             model=model or "gpt-4o-mini",
         )
         service._user_aggregator_params = user_aggregator_params
@@ -59,7 +59,7 @@ def create_llm_service(llm_config: dict) -> Any:
     elif provider == "gemini" or provider == "google":
         # Use OpenAI-compatible endpoint for Gemini
         service = OpenAILLMService(
-            api_key=os.getenv("GEMINI_API_KEY"),
+            api_key=llm_config.get("apiKey") or os.getenv("GEMINI_API_KEY"),
             model=model or "gemini-2.0-flash",
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         )
@@ -68,8 +68,8 @@ def create_llm_service(llm_config: dict) -> Any:
     elif provider == "anthropic":
         # Anthropic via OpenAI-compatible proxy or direct
         service = OpenAILLMService(
-            api_key=os.getenv("ANTHROPIC_API_KEY"),
-            model=model or "claude-sonnet-4-20250514",
+            api_key=llm_config.get("apiKey") or os.getenv("ANTHROPIC_API_KEY"),
+            model=model or "claude-haiku-4-5-20251001",
             base_url="https://api.anthropic.com/v1/",
         )
         return service

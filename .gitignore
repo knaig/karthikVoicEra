@@ -18,5 +18,5 @@ venv/
 *.egg-info/
 
 # OS
-.DS_Storevoice_2_voice_server/.env
+.DS_Store
 render-env.txt

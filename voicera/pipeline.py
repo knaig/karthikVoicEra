@@ -141,7 +141,7 @@ async def run_voice_pipeline(
         params=VADParams(
             confidence=0.6,     # Silero confidence threshold
             start_secs=0.3,     # 300ms min speech — filters phone clicks/noise
-            stop_secs=0.5,      # 500ms silence before considering speech ended
+            stop_secs=0.3,      # 300ms silence before considering speech ended (was 0.5)
             min_volume=0.5,     # Filters low-level line noise
         ),
     )
@@ -194,7 +194,7 @@ async def run_voice_pipeline(
             from pipecat.processors.aggregators.llm_response import LLMUserAggregatorParams
             user_params = LLMUserAggregatorParams(
                 smart_turn_analyzer=smart_turn,
-                aggregation_timeout=3.0,  # Max wait after VAD silence before forcing end-of-turn
+                aggregation_timeout=1.5,  # Max wait after VAD silence before forcing end-of-turn (was 3.0)
             )
             context_aggregator = llm.create_context_aggregator(context, user_params=user_params)
             logger.info("Using Smart Turn v3 for turn detection")
